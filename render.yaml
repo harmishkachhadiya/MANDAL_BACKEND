@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: mandal-backend
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: PORT
+        value: 3000
+      - key: JWT_SECRET
+        sync: false
+      - key: SQL_SERVER
+        sync: false
+      - key: SQL_DATABASE
+        sync: false
+      - key: SQL_USER
+        sync: false
+      - key: SQL_PASSWORD
+        sync: false
+      - key: SQL_PORT
+        value: 1433
+      - key: SQL_ENCRYPT
+        value: "false"
+      - key: SQL_TRUST_SERVER_CERTIFICATE
+        value: "true"

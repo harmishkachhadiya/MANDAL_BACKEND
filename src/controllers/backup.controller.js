@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const nodemailer = require('nodemailer');
 const { querySQL } = require('../config/db');
 
 const BACKUP_DIR = path.join(__dirname, '../../backups');
@@ -179,9 +180,127 @@ const deleteBackup = (req, res) => {
     }
 };
 
+// Send database backup via Email using Nodemailer
+const emailBackup = async (req, res) => {
+    try {
+        const { email, filename } = req.body;
+        const recipientEmail = email || process.env.BACKUP_EMAIL_TO;
+
+        if (!recipientEmail || !recipientEmail.includes('@')) {
+            return res.status(400).json({ error: 'Please provide a valid destination email address.' });
+        }
+
+        const smtpUser = process.env.SMTP_USER;
+        const smtpPass = process.env.SMTP_PASS;
+
+        if (!smtpUser || !smtpPass) {
+            return res.status(500).json({
+                error: 'Email service is not configured. Please configure SMTP_USER and SMTP_PASS in server environment.'
+            });
+        }
+
+        let targetFileName = filename;
+        let targetFilePath = null;
+
+        if (targetFileName) {
+            if (!/^[a-zA-Z0-9_\-]+\.sql$/.test(targetFileName)) {
+                return res.status(400).json({ error: 'Invalid backup filename.' });
+            }
+            targetFilePath = path.join(BACKUP_DIR, targetFileName);
+            if (!fs.existsSync(targetFilePath)) {
+                return res.status(404).json({ error: 'Specified backup file not found.' });
+            }
+        } else {
+            // Generate a fresh backup on demand
+            const now = new Date();
+            const pad = (n) => String(n).padStart(2, '0');
+            const timestamp = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
+            targetFileName = `${BACKUP_PREFIX}_${timestamp}.sql`;
+            targetFilePath = path.join(BACKUP_DIR, targetFileName);
+
+            const dumpSql = await generateDatabaseDump();
+            fs.writeFileSync(targetFilePath, dumpSql, 'utf-8');
+        }
+
+        const stats = fs.statSync(targetFilePath);
+        const fileSizeKb = (stats.size / 1024).toFixed(2);
+
+        // Configure Nodemailer transporter
+        const transporter = nodemailer.createTransport({
+            host: process.env.SMTP_HOST || 'smtp.gmail.com',
+            port: Number(process.env.SMTP_PORT || 587),
+            secure: process.env.SMTP_SECURE === 'true' || process.env.SMTP_PORT === '465',
+            auth: {
+                user: smtpUser,
+                pass: smtpPass
+            },
+            tls: {
+                rejectUnauthorized: false
+            }
+        });
+
+        const mailOptions = {
+            from: `"Mandal Financial Core" <${smtpUser}>`,
+            to: recipientEmail,
+            subject: `🏛️ Database Backup: ${targetFileName} (${fileSizeKb} KB)`,
+            html: `
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #E2D5B5; border-radius: 8px; background-color: #FDFDFD;">
+                    <div style="background-color: #0F172A; padding: 15px; border-radius: 6px; text-align: center; color: #FFFFFF;">
+                        <h2 style="margin: 0; font-size: 20px;">🏛️ Mandal Financial Database Backup</h2>
+                    </div>
+                    <div style="padding: 20px 10px; color: #334155; line-height: 1.6;">
+                        <p>Hello,</p>
+                        <p>Attached is the automated database backup file for <strong>${process.env.SQL_DATABASE || 'Mandal Financial System'}</strong>.</p>
+                        <table style="width: 100%; border-collapse: collapse; margin: 15px 0;">
+                            <tr style="background-color: #F8FAFC;">
+                                <td style="padding: 8px; border: 1px solid #E2E8F0; font-weight: bold;">File Name:</td>
+                                <td style="padding: 8px; border: 1px solid #E2E8F0;">${targetFileName}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 8px; border: 1px solid #E2E8F0; font-weight: bold;">File Size:</td>
+                                <td style="padding: 8px; border: 1px solid #E2E8F0;">${fileSizeKb} KB</td>
+                            </tr>
+                            <tr style="background-color: #F8FAFC;">
+                                <td style="padding: 8px; border: 1px solid #E2E8F0; font-weight: bold;">Generated At:</td>
+                                <td style="padding: 8px; border: 1px solid #E2E8F0;">${new Date().toLocaleString('en-IN')}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 8px; border: 1px solid #E2E8F0; font-weight: bold;">Triggered By:</td>
+                                <td style="padding: 8px; border: 1px solid #E2E8F0;">${req.user?.userid || 'System Operator'}</td>
+                            </tr>
+                        </table>
+                        <p style="font-size: 13px; color: #64748B;">Please store this SQL backup file in a secure location.</p>
+                    </div>
+                    <div style="border-top: 1px solid #E2E8F0; padding-top: 10px; font-size: 12px; color: #94A3B8; text-align: center;">
+                        Mandal Financial Core Management System &copy; ${new Date().getFullYear()}
+                    </div>
+                </div>
+            `,
+            attachments: [
+                {
+                    filename: targetFileName,
+                    path: targetFilePath
+                }
+            ]
+        };
+
+        await transporter.sendMail(mailOptions);
+
+        res.json({
+            message: `Database backup (${targetFileName}) successfully sent to ${recipientEmail}!`,
+            recipient: recipientEmail,
+            file: targetFileName
+        });
+    } catch (error) {
+        console.error('Email backup error:', error);
+        res.status(500).json({ error: error.message || 'Failed to email database backup.' });
+    }
+};
+
 module.exports = {
     createBackup,
     listBackups,
     downloadBackup,
-    deleteBackup
+    deleteBackup,
+    emailBackup
 };

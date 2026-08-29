@@ -27,8 +27,26 @@ const createTransaction = async (req, res) => {
 
         const calcTotal = Number(JAMA || 0) + Number(INSTALLMENT || 0) + Number(INTREST || 0) + Number(FINE || 0);
 
+        const targetDate = TRNDATE || new Date().toISOString().split('T')[0];
+
         // If TRNNO is provided, update existing record
         if (TRNNO) {
+            // Check for collision with another transaction for same member on same date
+            const existingConflict = await querySQL(`
+                SELECT [TRNNO] FROM [dbo].[TRNMAST]
+                WHERE [P_CODE] = @P_CODE AND [TRNDATE] = @TRNDATE AND [TRNNO] <> @TRNNO
+            `, [
+                { name: 'P_CODE', type: sql.VarChar, value: P_CODE },
+                { name: 'TRNDATE', type: sql.Date, value: targetDate },
+                { name: 'TRNNO', type: sql.Int, value: Number(TRNNO) }
+            ]);
+
+            if (existingConflict.recordset && existingConflict.recordset.length > 0) {
+                return res.status(400).json({
+                    error: `Another transaction (#${existingConflict.recordset[0].TRNNO}) already exists for this member on ${targetDate}. Only one entry per member is allowed per day.`
+                });
+            }
+
             await querySQL(`
                 UPDATE [dbo].[TRNMAST]
                 SET 
@@ -45,7 +63,7 @@ const createTransaction = async (req, res) => {
                 WHERE [TRNNO] = @TRNNO
             `, [
                 { name: 'TRNNO', type: sql.Int, value: Number(TRNNO) },
-                { name: 'TRNDATE', type: sql.Date, value: TRNDATE || new Date().toISOString().split('T')[0] },
+                { name: 'TRNDATE', type: sql.Date, value: targetDate },
                 { name: 'P_CODE', type: sql.VarChar, value: P_CODE },
                 { name: 'INSTALLMENT', type: sql.Money, value: INSTALLMENT || 0 },
                 { name: 'UPAD', type: sql.Money, value: UPAD || 0 },
@@ -60,6 +78,21 @@ const createTransaction = async (req, res) => {
             return res.json({
                 message: `Transaction #${TRNNO} updated successfully`,
                 TRNNO: Number(TRNNO)
+            });
+        }
+
+        // Validate: only ONE transaction per member allowed per day
+        const existingRecord = await querySQL(`
+            SELECT [TRNNO] FROM [dbo].[TRNMAST]
+            WHERE [P_CODE] = @P_CODE AND [TRNDATE] = @TRNDATE
+        `, [
+            { name: 'P_CODE', type: sql.VarChar, value: P_CODE },
+            { name: 'TRNDATE', type: sql.Date, value: targetDate }
+        ]);
+
+        if (existingRecord.recordset && existingRecord.recordset.length > 0) {
+            return res.status(400).json({
+                error: `Only one entry per member is allowed per day. Transaction #${existingRecord.recordset[0].TRNNO} already exists for this member on ${targetDate}. Please edit the existing entry instead.`
             });
         }
 
